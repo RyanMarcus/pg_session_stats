@@ -47,11 +47,11 @@ static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 
 static char* pg_session_stats_path;
 
-const char* pg_session_stats_insert_sql = "INSERT INTO log VALUES(?, ?, ?, ?);";
+const char* pg_session_stats_insert_sql = "INSERT INTO log VALUES(?, ?, ?, ?, ?);";
 
 pid_t read_pg_pid_desc(void);
 void trimwhitespace(char *str);
-void read_mem_info(char* buf, size_t len);
+void read_file(const char* fp, char* buf, size_t len);
 
 PerfInfo GLOBAL_TABLE[4096]; // maximum of 4096 parallel queries
 
@@ -105,19 +105,19 @@ pid_t read_pg_pid_desc() {
   return (pid_t) atoi(desc + curr);
 }
 
-void read_mem_info(char* buf, size_t len) {
+void read_file(const char* fp, char* buf, size_t len) {
   FILE* f;
 
   memset(buf, 0, len);
 
-  f = fopen("/proc/self/status", "r");
+  f = fopen(fp, "r");
   if (!f) {
-    elog(ERROR, "could not read proc status");
+    elog(ERROR, "could not open file");
     return;
   }
 
   if (fread(buf, sizeof(char), len, f) == 0) {
-    elog(ERROR, "could not fread from proc status");
+    elog(ERROR, "could not fread from file status");
     return;
   }
 }
@@ -176,15 +176,18 @@ void saveInfo() {
   int rc;
   pid_t pid, parent;
   char buf[8096];
+  char buf2[8096];
   
   clock_t usage = clock();
   double asSeconds = (double)usage / (double)CLOCKS_PER_SEC;
 
   memset(buf, 0, 8096);
+  memset(buf2, 0, 8096);
   
   pid = getpid();
   parent = read_pg_pid_desc();
-  read_mem_info(buf, 8096);
+  read_file("/proc/self/status", buf, 8096);
+  read_file("/proc/self/io", buf2, 8096);
   
   rc = sqlite3_open(pg_session_stats_path, &db);
   sqlite3_busy_timeout(db, 5000);
@@ -200,7 +203,8 @@ void saveInfo() {
                     "  master_pid INT,"
                     "  my_pid     INT,"
                     "  usage      REAL,"
-                    "  procstatus TEXT"
+                    "  procstatus TEXT,"
+                    "  procio     TEXT"
                     ");",
                     NULL, NULL, NULL);
 
@@ -222,6 +226,7 @@ void saveInfo() {
   sqlite3_bind_int(res, 2, pid);
   sqlite3_bind_double(res, 3, asSeconds);
   sqlite3_bind_text(res, 4, buf, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(res, 5, buf2, -1, SQLITE_TRANSIENT);
 
   if (sqlite3_step(res) != SQLITE_DONE) {
     elog(ERROR, "Could not insert data: %s",
